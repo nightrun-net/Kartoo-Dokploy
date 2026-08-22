@@ -638,6 +638,787 @@ app.post(
   }
 );
 
+app.post(
+  '/auth/forgot-password/send-otp',
+  sendOtpLimiter,
+  async (req, res) => {
+    let newOtpId = null;
+
+    try {
+      const normalizedPhone =
+        normalizeIraqiPhone(
+          req.body.phone
+        );
+
+      if (!normalizedPhone) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'Enter a valid Iraqi number: 07XXXXXXXXX',
+        });
+      }
+
+      const {
+        data: profile,
+        error: profileError,
+      } =
+        await supabase
+          .from('users')
+          .select('id, phone')
+          .eq(
+            'phone',
+            normalizedPhone.e164
+          )
+          .maybeSingle();
+
+      if (profileError) {
+        throw profileError;
+      }
+
+      if (!profile) {
+        return res.status(404).json({
+          success: false,
+          message:
+            'No account was found with this phone number.',
+        });
+      }
+
+      const {
+        data: latestOtp,
+        error: latestOtpError,
+      } =
+        await supabase
+          .from(
+            'password_reset_otps'
+          )
+          .select('created_at')
+          .eq(
+            'phone',
+            normalizedPhone.e164
+          )
+          .is(
+            'used_at',
+            null
+          )
+          .order(
+            'created_at',
+            {
+              ascending: false,
+            }
+          )
+          .limit(1)
+          .maybeSingle();
+
+      if (latestOtpError) {
+        throw latestOtpError;
+      }
+
+      if (
+        latestOtp
+          ?.created_at
+      ) {
+        const secondsSinceLastRequest =
+          Math.floor(
+            (
+              Date.now() -
+              new Date(
+                latestOtp.created_at
+              ).getTime()
+            ) /
+            1000
+          );
+
+        if (
+          secondsSinceLastRequest <
+          40
+        ) {
+          return res
+            .status(429)
+            .json({
+              success: false,
+              message:
+                `Wait ${
+                  40 -
+                  secondsSinceLastRequest
+                } seconds before requesting another code.`,
+            });
+        }
+      }
+
+      const {
+        error:
+          invalidateError,
+      } =
+        await supabase
+          .from(
+            'password_reset_otps'
+          )
+          .update({
+            used_at:
+              new Date()
+                .toISOString(),
+          })
+          .eq(
+            'phone',
+            normalizedPhone.e164
+          )
+          .is(
+            'used_at',
+            null
+          );
+
+      if (
+        invalidateError
+      ) {
+        throw invalidateError;
+      }
+
+      const code =
+        crypto
+          .randomInt(
+            100000,
+            1000000
+          )
+          .toString();
+
+      const requestId =
+        crypto.randomUUID();
+
+      const codeHash =
+        createOtpHash({
+          requestId,
+          phone:
+            normalizedPhone.e164,
+          code,
+        });
+
+      const expiresAt =
+        new Date(
+          Date.now() +
+          5 * 60 * 1000
+        ).toISOString();
+
+      const {
+        data: otpRow,
+        error:
+          otpInsertError,
+      } =
+        await supabase
+          .from(
+            'password_reset_otps'
+          )
+          .insert({
+            id:
+              requestId,
+
+            user_id:
+              profile.id,
+
+            phone:
+              normalizedPhone.e164,
+
+            code_hash:
+              codeHash,
+
+            expires_at:
+              expiresAt,
+
+            attempts:
+              0,
+
+            max_attempts:
+              5,
+          })
+          .select('id')
+          .single();
+
+      if (
+        otpInsertError
+      ) {
+        throw otpInsertError;
+      }
+
+      newOtpId =
+        otpRow.id;
+
+      const otpiqResult =
+        await sendThroughOtpiq({
+          phoneNumber:
+            normalizedPhone.otpiq,
+
+          code,
+        });
+
+      const providerMessageId =
+        otpiqResult.smsId ||
+        otpiqResult.id ||
+        otpiqResult.messageId ||
+        null;
+
+      if (
+        providerMessageId
+      ) {
+        await supabase
+          .from(
+            'password_reset_otps'
+          )
+          .update({
+            provider_message_id:
+              String(
+                providerMessageId
+              ),
+          })
+          .eq(
+            'id',
+            newOtpId
+          );
+      }
+
+      return res
+        .status(200)
+        .json({
+          success: true,
+
+          message:
+            'The verification code was sent through WhatsApp.',
+
+          requestId:
+            newOtpId,
+
+          expiresIn:
+            300,
+
+          resendAfter:
+            40,
+        });
+    } catch (error) {
+      console.error(
+        'Forgot password send OTP error:',
+        error
+      );
+
+      if (
+        newOtpId
+      ) {
+        await supabase
+          .from(
+            'password_reset_otps'
+          )
+          .delete()
+          .eq(
+            'id',
+            newOtpId
+          );
+      }
+
+      return res
+        .status(
+          Number.isInteger(
+            error.statusCode
+          )
+            ? error.statusCode
+            : 500
+        )
+        .json({
+          success: false,
+
+          message:
+            error.message ||
+            'Could not send password reset OTP.',
+        });
+    }
+  }
+);
+
+app.post(
+  '/auth/forgot-password/verify-otp',
+  verifyOtpLimiter,
+  async (req, res) => {
+    try {
+      const normalizedPhone =
+        normalizeIraqiPhone(
+          req.body.phone
+        );
+
+      const otp =
+        String(
+          req.body.otp ||
+          ''
+        );
+
+      if (!normalizedPhone) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              'The phone number is invalid.',
+          });
+      }
+
+      if (
+        !/^\d{6}$/.test(
+          otp
+        )
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              'Enter the complete six-digit code.',
+          });
+      }
+
+      const {
+        data: otpRow,
+        error: otpError,
+      } =
+        await supabase
+          .from(
+            'password_reset_otps'
+          )
+          .select('*')
+          .eq(
+            'phone',
+            normalizedPhone.e164
+          )
+          .is(
+            'used_at',
+            null
+          )
+          .order(
+            'created_at',
+            {
+              ascending: false,
+            }
+          )
+          .limit(1)
+          .maybeSingle();
+
+      if (
+        otpError
+      ) {
+        throw otpError;
+      }
+
+      if (
+        !otpRow
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              'Request a new verification code.',
+          });
+      }
+
+      if (
+        new Date(
+          otpRow.expires_at
+        ).getTime() <=
+        Date.now()
+      ) {
+        await supabase
+          .from(
+            'password_reset_otps'
+          )
+          .update({
+            used_at:
+              new Date()
+                .toISOString(),
+          })
+          .eq(
+            'id',
+            otpRow.id
+          );
+
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              'The verification code expired.',
+          });
+      }
+
+      const attempts =
+        Number(
+          otpRow.attempts ||
+          0
+        );
+
+      const maxAttempts =
+        Number(
+          otpRow.max_attempts ||
+          5
+        );
+
+      if (
+        attempts >=
+        maxAttempts
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              'Too many incorrect attempts. Request a new code.',
+          });
+      }
+
+      const expectedHash =
+        createOtpHash({
+          requestId:
+            otpRow.id,
+
+          phone:
+            normalizedPhone.e164,
+
+          code:
+            otp,
+        });
+
+      const valid =
+        crypto.timingSafeEqual(
+          Buffer.from(
+            expectedHash,
+            'hex'
+          ),
+          Buffer.from(
+            otpRow.code_hash,
+            'hex'
+          )
+        );
+
+      if (
+        !valid
+      ) {
+        const newAttempts =
+          attempts + 1;
+
+        await supabase
+          .from(
+            'password_reset_otps'
+          )
+          .update({
+            attempts:
+              newAttempts,
+
+            used_at:
+              newAttempts >=
+              maxAttempts
+                ? new Date()
+                    .toISOString()
+                : null,
+          })
+          .eq(
+            'id',
+            otpRow.id
+          );
+
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              newAttempts >=
+              maxAttempts
+                ? 'Too many incorrect attempts. Request a new code.'
+                : 'The verification code is incorrect.',
+          });
+      }
+
+      const resetToken =
+        crypto
+          .randomBytes(
+            32
+          )
+          .toString('hex');
+
+      const resetTokenHash =
+        crypto
+          .createHmac(
+            'sha256',
+            OTP_HASH_SECRET
+          )
+          .update(
+            resetToken
+          )
+          .digest('hex');
+
+      const resetTokenExpiresAt =
+        new Date(
+          Date.now() +
+          10 * 60 * 1000
+        ).toISOString();
+
+      const {
+        error: updateError,
+      } =
+        await supabase
+          .from(
+            'password_reset_otps'
+          )
+          .update({
+            verified_at:
+              new Date()
+                .toISOString(),
+
+            reset_token_hash:
+              resetTokenHash,
+
+            reset_token_expires_at:
+              resetTokenExpiresAt,
+          })
+          .eq(
+            'id',
+            otpRow.id
+          );
+
+      if (
+        updateError
+      ) {
+        throw updateError;
+      }
+
+      return res.json({
+        success: true,
+
+        resetToken,
+
+        expiresIn:
+          600,
+      });
+    } catch (error) {
+      console.error(
+        'Forgot password verify OTP error:',
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+
+          message:
+            error.message ||
+            'Could not verify the password reset OTP.',
+        });
+    }
+  }
+);
+
+app.post(
+  '/auth/forgot-password/reset-password',
+  verifyOtpLimiter,
+  async (req, res) => {
+    try {
+      const normalizedPhone =
+        normalizeIraqiPhone(
+          req.body.phone
+        );
+
+      const resetToken =
+        String(
+          req.body.resetToken ||
+          ''
+        );
+
+      const newPassword =
+        String(
+          req.body.newPassword ||
+          ''
+        );
+
+      if (!normalizedPhone) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              'The phone number is invalid.',
+          });
+      }
+
+      if (
+        !resetToken
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              'The password reset session is invalid.',
+          });
+      }
+
+      if (
+        !isStrongPassword(
+          newPassword
+        )
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              'Password must contain at least 8 characters, one capital letter, one number and one symbol.',
+          });
+      }
+
+      const resetTokenHash =
+        crypto
+          .createHmac(
+            'sha256',
+            OTP_HASH_SECRET
+          )
+          .update(
+            resetToken
+          )
+          .digest('hex');
+
+      const {
+        data: otpRow,
+        error: otpError,
+      } =
+        await supabase
+          .from(
+            'password_reset_otps'
+          )
+          .select(
+            'id, user_id, reset_token_hash, reset_token_expires_at, used_at, verified_at'
+          )
+          .eq(
+            'phone',
+            normalizedPhone.e164
+          )
+          .eq(
+            'reset_token_hash',
+            resetTokenHash
+          )
+          .is(
+            'used_at',
+            null
+          )
+          .order(
+            'created_at',
+            {
+              ascending: false,
+            }
+          )
+          .limit(1)
+          .maybeSingle();
+
+      if (
+        otpError
+      ) {
+        throw otpError;
+      }
+
+      if (
+        !otpRow ||
+        !otpRow.verified_at
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              'The password reset session is invalid.',
+          });
+      }
+
+      if (
+        !otpRow
+          .reset_token_expires_at ||
+        new Date(
+          otpRow
+            .reset_token_expires_at
+        ).getTime() <=
+        Date.now()
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              'The password reset session expired. Request a new code.',
+          });
+      }
+
+      const {
+        error:
+          passwordUpdateError,
+      } =
+        await supabase.auth
+          .admin
+          .updateUserById(
+            otpRow.user_id,
+            {
+              password:
+                newPassword,
+            }
+          );
+
+      if (
+        passwordUpdateError
+      ) {
+        throw passwordUpdateError;
+      }
+
+      const {
+        error:
+          markUsedError,
+      } =
+        await supabase
+          .from(
+            'password_reset_otps'
+          )
+          .update({
+            used_at:
+              new Date()
+                .toISOString(),
+          })
+          .eq(
+            'id',
+            otpRow.id
+          );
+
+      if (
+        markUsedError
+      ) {
+        console.error(
+          'Could not mark reset OTP as used:',
+          markUsedError
+        );
+      }
+
+      return res.json({
+        success: true,
+
+        message:
+          'Password changed successfully.',
+      });
+    } catch (error) {
+      console.error(
+        'Forgot password reset error:',
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+
+          message:
+            error.message ||
+            'Could not reset the password.',
+        });
+    }
+  }
+);
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(
