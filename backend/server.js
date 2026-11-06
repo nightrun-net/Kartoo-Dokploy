@@ -93,18 +93,6 @@ const verifyOtpLimiter = rateLimit({
 });
 
 
-const supabaseLogin = createClient(
-  SUPABASE_URL,
-  SUPABASE_ANON_KEY,
-  {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-      detectSessionInUrl: false,
-    },
-  }
-);
-
 
 function normalizeIraqiPhone(value) {
   let digits = String(value || '').replace(/\D/g, '');
