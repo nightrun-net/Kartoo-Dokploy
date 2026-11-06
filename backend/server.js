@@ -26,6 +26,7 @@ const {
   OTPIQ_PROVIDER = 'whatsapp',
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
+  SUPABASE_ANON_KEY,
   OTP_HASH_SECRET,
 } = process.env;
 
@@ -37,6 +38,7 @@ const missingVariables = [
   ['OTPIQ_API_KEY', OTPIQ_API_KEY],
   ['SUPABASE_URL', SUPABASE_URL],
   ['SUPABASE_SERVICE_ROLE_KEY', SUPABASE_SERVICE_ROLE_KEY],
+  ['SUPABASE_ANON_KEY', SUPABASE_ANON_KEY],
   ['OTP_HASH_SECRET', OTP_HASH_SECRET],
 ]
   .filter(([, value]) => !value)
@@ -65,6 +67,20 @@ const supabase = createClient(
     },
   }
 );
+
+
+const supabaseLogin = createClient(
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+    },
+  }
+);
+
 
 const sendOtpLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
