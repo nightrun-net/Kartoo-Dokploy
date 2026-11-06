@@ -68,20 +68,6 @@ const supabase = createClient(
   }
 );
 
-
-const supabaseLogin = createClient(
-  SUPABASE_URL,
-  SUPABASE_ANON_KEY,
-  {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-      detectSessionInUrl: false,
-    },
-  }
-);
-
-
 const sendOtpLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 5,
@@ -1492,6 +1478,34 @@ function normalizeLoginPhone(input) {
   throw new Error("Invalid phone number");
 }
 
+
+const loginQueues = new Map();
+
+async function withLoginLock(phone, operation) {
+  const previous = loginQueues.get(phone) || Promise.resolve();
+
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+
+  const tail = previous.then(() => current);
+  loginQueues.set(phone, tail);
+
+  await previous;
+
+  try {
+    return await operation();
+  } finally {
+    release();
+
+    if (loginQueues.get(phone) === tail) {
+      loginQueues.delete(phone);
+    }
+  }
+}
+
+
 app.post("/api/auth/login", loginLimiter, async (req, res) => {
   try {
     const phone = normalizeLoginPhone(req.body?.phone);
@@ -1522,7 +1536,7 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
     }
 
     const { data: authData, error: authError } =
-      await loginAuthClient.auth.signInWithPassword({
+      await supabaseLogin.auth.signInWithPassword({
         phone,
         password
       });
