@@ -1535,9 +1535,9 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
         lockedUntil: lock.locked_until
       });
     }
-
+      
     const { data: authData, error: authError } =
-      await supabaseLogin.auth.signInWithPassword({
+      await loginAuthClient.auth.signInWithPassword({
         phone,
         password
       });
@@ -1564,7 +1564,7 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
     const accessToken = authData.session.access_token;
     
     const { data: verifiedClaims, error: claimsError } =
-      await supabaseLogin.auth.getClaims(accessToken);
+      await loginAuthClient.auth.getClaims(accessToken);
     
     if (claimsError || !verifiedClaims?.claims) {
       return res.status(401).json({
