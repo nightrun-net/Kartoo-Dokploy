@@ -1510,7 +1510,7 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
   try {
     const phone = normalizeLoginPhone(req.body?.phone);
     const password = req.body?.password;
-
+    return await withLoginLock(phone, async () => {
     if (typeof password !== "string" ||
         password.length < 1 ||
         password.length > 1024) {
@@ -1556,6 +1556,7 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
         lockedUntil: failed?.locked_until
       });
     }
+      
 
     const user = authData.user;
 
@@ -1598,6 +1599,7 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
         expires_at: authData.session.expires_at
       }
     });
+  }); // End withLoginLock
 
   } catch (error) {
     console.error("Login endpoint error:", error.message);
