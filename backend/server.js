@@ -1420,6 +1420,152 @@ app.post(
   }
 );
 
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many login requests. Try again later."
+  }
+});
+
+const loginAuthClient = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false
+    }
+  }
+);
+
+function normalizeLoginPhone(input) {
+  const digits = String(input || "").replace(/\D/g, "");
+
+  if (/^07\d{9}$/.test(digits)) {
+    return `+964${digits.slice(1)}`;
+  }
+
+  if (/^9647\d{9}$/.test(digits)) {
+    return `+${digits}`;
+  }
+
+  if (/^7\d{9}$/.test(digits)) {
+    return `+964${digits}`;
+  }
+
+  throw new Error("Invalid phone number");
+}
+
+app.post("/api/auth/login", loginLimiter, async (req, res) => {
+  try {
+    const phone = normalizeLoginPhone(req.body?.phone);
+    const password = req.body?.password;
+
+    if (typeof password !== "string" ||
+        password.length < 1 ||
+        password.length > 1024) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid login credentials"
+      });
+    }
+
+    const { data: lock, error: lockError } =
+      await supabase.rpc("check_login_attempt_lock", {
+        p_phone: phone
+      });
+
+    if (lockError) throw lockError;
+
+    if (lock?.locked) {
+      return res.status(429).json({
+        success: false,
+        message: "Login temporarily locked",
+        lockedUntil: lock.locked_until
+      });
+    }
+
+    const { data: authData, error: authError } =
+      await loginAuthClient.auth.signInWithPassword({
+        phone,
+        password
+      });
+
+    if (authError || !authData?.user || !authData?.session) {
+      const { data: failed, error: failedError } =
+        await supabase.rpc("record_login_failure", {
+          p_phone: phone
+        });
+
+      if (failedError) throw failedError;
+
+      return res.status(401).json({
+        success: false,
+        message: "Invalid login credentials",
+        attemptsLeft: failed?.attempts_left,
+        lockedUntil: failed?.locked_until
+      });
+    }
+
+    const user = authData.user;
+
+    const { data: profile, error: profileError } =
+      await supabase
+        .from("users")
+        .select("id, phone, is_banned, login_locked_until")
+        .eq("id", user.id)
+        .maybeSingle();
+
+    if (profileError) throw profileError;
+
+    if (!profile ||
+        profile.phone !== phone ||
+        profile.is_banned ||
+        (profile.login_locked_until &&
+         new Date(profile.login_locked_until) > new Date())) {
+      return res.status(403).json({
+        success: false,
+        message: "Account unavailable"
+      });
+    }
+
+    const { error: clearError } =
+      await supabase.rpc("clear_login_failures", {
+        p_phone: phone
+      });
+
+    if (clearError) throw clearError;
+
+    return res.json({
+      success: true,
+      user: {
+        id: user.id,
+        phone: profile.phone
+      },
+      session: {
+        access_token: authData.session.access_token,
+        refresh_token: authData.session.refresh_token,
+        expires_at: authData.session.expires_at
+      }
+    });
+
+  } catch (error) {
+    console.error("Login endpoint error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Login temporarily unavailable"
+    });
+  }
+});
+
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(
     `Registration API is running on port ${PORT}`
