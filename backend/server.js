@@ -1845,6 +1845,71 @@ app.get("/api/auth/me", requireAuth, async (req, res) => {
 });
 
 
+
+/* ============================================
+   SECURE SINGLE-DEVICE LOGOUT
+============================================ */
+
+app.post("/api/auth/logout", requireAuth, async (req, res) => {
+  try {
+    const authorization = req.headers.authorization || "";
+    const accessToken = authorization.slice(7).trim();
+
+    const { data: claimsData, error: claimsError } =
+      await supabase.auth.getClaims(accessToken);
+
+    const sessionId = claimsData?.claims?.session_id;
+
+    if (
+      claimsError ||
+      claimsData?.claims?.sub !== req.user.id ||
+      typeof sessionId !== "string" ||
+      !/^[0-9a-f-]{36}$/i.test(sessionId)
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid logout session."
+      });
+    }
+
+    const { data: released, error: releaseError } =
+      await supabase.rpc("release_kartoo_device_session", {
+        p_user_id: req.user.id,
+        p_session_id: sessionId
+      });
+
+    if (releaseError) {
+      console.error("Logout release error:", releaseError.message);
+
+      return res.status(503).json({
+        success: false,
+        message: "Could not release this device."
+      });
+    }
+
+    if (released !== true) {
+      return res.status(409).json({
+        success: false,
+        message: "This session no longer owns the device."
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Logged out successfully. This device has been released."
+    });
+
+  } catch (error) {
+    console.error("Logout endpoint error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Logout temporarily unavailable."
+    });
+  }
+});
+
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(
     `Registration API is running on port ${PORT}`
