@@ -1509,6 +1509,19 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
     }
     
     const password = req.body?.password;
+
+    const deviceId = req.body?.deviceId;
+
+    if (
+      typeof deviceId !== "string" ||
+      deviceId.trim().length < 8 ||
+      deviceId.length > 200
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid device ID is required."
+      });
+    }
     
     return await withLoginLock(phone, async () => {
 
@@ -1628,27 +1641,32 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
 
     if (clearError) throw clearError;
 
-    const { data: updatedSession, error: sessionError } =
-      await supabase
-        .from("users")
-        .update({
-          active_session_id: sessionId,
-          is_logged_in: true
-        })
-        .eq("id", user.id)
-        .eq("is_banned", false)
-        .select("id, active_session_id")
-        .single();
-    
-    if (sessionError || !updatedSession) {
+      
+    const { data: deviceClaimed, error: deviceError } =
+      await supabase.rpc("claim_kartoo_device_session", {
+        p_user_id: user.id,
+        p_device_id: deviceId.trim(),
+        p_session_id: sessionId
+      });
+
+    if (deviceError) {
       console.error(
-        "Could not save active session:",
-        sessionError?.message
+        "Device session claim failed:",
+        deviceError.message
       );
-    
+
       return res.status(503).json({
         success: false,
-        message: "Could not activate login session"
+        message: "Could not verify device login status."
+      });
+    }
+
+    if (deviceClaimed !== true) {
+      return res.status(403).json({
+        success: false,
+        code: "DEVICE_ALREADY_LOGGED_IN",
+        message:
+          "This account is already logged in on another device. Please log out from that device first."
       });
     }
 
