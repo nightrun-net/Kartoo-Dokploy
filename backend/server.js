@@ -1496,9 +1496,22 @@ async function withLoginLock(phone, operation) {
 
 app.post("/api/auth/login", loginLimiter, async (req, res) => {
   try {
-    const phone = normalizeLoginPhone(req.body?.phone);
+
+    let phone;
+    
+    try {
+      phone = normalizeLoginPhone(req.body?.phone);
+    } catch {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid Iraqi phone number."
+      });
+    }
+    
     const password = req.body?.password;
+    
     return await withLoginLock(phone, async () => {
+
     if (typeof password !== "string" ||
         password.length < 1 ||
         password.length > 1024) {
@@ -1547,6 +1560,31 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
       
 
     const user = authData.user;
+    
+    const accessToken = authData.session.access_token;
+    
+    const { data: verifiedClaims, error: claimsError } =
+      await supabaseLogin.auth.getClaims(accessToken);
+    
+    if (claimsError || !verifiedClaims?.claims) {
+      return res.status(401).json({
+        success: false,
+        message: "Could not verify login session"
+      });
+    }
+    
+    const sessionId = verifiedClaims.claims.session_id;
+    
+    if (
+      typeof sessionId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId) ||
+      verifiedClaims.claims.sub !== user.id
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid authentication session"
+      });
+    }
 
     const { data: profile, error: profileError } =
       await supabase
@@ -1557,11 +1595,26 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
 
     if (profileError) throw profileError;
 
-    if (!profile ||
-        profile.phone !== phone ||
-        profile.is_banned ||
-        (profile.login_locked_until &&
-         new Date(profile.login_locked_until) > new Date())) {
+    if (
+      !profile ||
+      profile.phone !== phone ||
+      profile.is_banned ||
+      (profile.login_locked_until &&
+        new Date(profile.login_locked_until) > new Date())
+    ) {
+      const { error: revokeError } =
+        await supabase.auth.admin.signOut(
+          authData.session.access_token,
+          "global"
+        );
+    
+      if (revokeError) {
+        console.error(
+          "Session revocation failed:",
+          revokeError.message
+        );
+      }
+    
       return res.status(403).json({
         success: false,
         message: "Account unavailable"
@@ -1574,6 +1627,30 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
       });
 
     if (clearError) throw clearError;
+
+    const { data: updatedSession, error: sessionError } =
+      await supabase
+        .from("users")
+        .update({
+          active_session_id: sessionId,
+          is_logged_in: true
+        })
+        .eq("id", user.id)
+        .eq("is_banned", false)
+        .select("id, active_session_id")
+        .single();
+    
+    if (sessionError || !updatedSession) {
+      console.error(
+        "Could not save active session:",
+        sessionError?.message
+      );
+    
+      return res.status(503).json({
+        success: false,
+        message: "Could not activate login session"
+      });
+    }
 
     return res.json({
       success: true,
@@ -1595,6 +1672,156 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Login temporarily unavailable"
+    });
+  }
+});
+
+
+
+async function requireAuth(req, res, next) {
+  try {
+    const authorization = req.headers.authorization || "";
+
+    if (!authorization.startsWith("Bearer ")) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required"
+      });
+    }
+
+    const token = authorization.slice(7).trim();
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid authentication token"
+      });
+    }
+
+    const { data, error } =
+      await supabase.auth.getUser(token);
+
+    if (error || !data?.user) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid or expired session"
+      });
+    }
+
+  const { data: profile, error: profileError } =
+    await supabase
+      .from("users")
+      .select(`
+        id,
+        is_banned,
+        login_locked_until,
+        active_session_id,
+        is_logged_in
+      `)
+      .eq("id", data.user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      throw profileError;
+    }
+
+    if (
+      !profile ||
+      profile.is_banned ||
+      (
+        profile.login_locked_until &&
+        new Date(profile.login_locked_until) > new Date()
+      )
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "Account unavailable"
+      });
+    }
+   
+    const { data: claimsData, error: claimsError } =
+      await supabase.auth.getClaims(token);
+    
+    if (claimsError || !claimsData?.claims) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid authentication session"
+      });
+    }
+    
+    const tokenSessionId = claimsData.claims.session_id;
+    
+    if (
+      claimsData.claims.sub !== data.user.id ||
+      !tokenSessionId ||
+      !profile.is_logged_in ||
+      !profile.active_session_id ||
+      tokenSessionId !== profile.active_session_id
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Your session has expired or another device has logged in.",
+        code: "SESSION_REPLACED"
+      });
+    }
+
+    req.user = data.user;
+    req.profile = profile;
+
+    return next();
+
+  } catch (error) {
+    console.error("Authentication error:", error.message);
+
+    return res.status(503).json({
+      success: false,
+      message: "Authentication temporarily unavailable"
+    });
+  }
+}
+
+
+
+/* ============================================
+   GET AUTHENTICATED USER PROFILE
+============================================ */
+
+app.get("/api/auth/me", requireAuth, async (req, res) => {
+  try {
+    const { data: profile, error } = await supabase
+      .from("users")
+      .select(`
+        id,
+        first_name,
+        last_name,
+        phone,
+        city,
+        district,
+        home_address,
+        phone_verified,
+        created_at
+      `)
+      .eq("id", req.user.id)
+      .single();
+
+    if (error || !profile) {
+      return res.status(404).json({
+        success: false,
+        message: "User profile not found"
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      user: profile
+    });
+
+  } catch (error) {
+    console.error("Get profile error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Could not load user profile"
     });
   }
 });
