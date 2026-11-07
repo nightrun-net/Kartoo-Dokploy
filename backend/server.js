@@ -1649,6 +1649,34 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
 
     if (profileError) throw profileError;
 
+    // ==========================================
+    // CHECK LOGOUT LIMIT RESTRICTION
+    // ==========================================
+    
+    const { data: logoutLimit, error: logoutLimitError } =
+      await supabase
+        .from("user_logout_limits")
+        .select("locked_until")
+        .eq("user_id", user.id)
+        .maybeSingle();
+    
+    if (logoutLimitError) {
+      throw logoutLimitError;
+    }
+    
+    if (
+      logoutLimit?.locked_until &&
+      new Date(logoutLimit.locked_until).getTime() > Date.now()
+    ) {
+      return res.status(403).json({
+        success: false,
+        code: "LOGOUT_LIMIT_LOCKED",
+        message: "Your account is locked for 24 hours after two logouts.",
+        lockedUntil: logoutLimit.locked_until,
+        lockType: "logout_limit"
+      });
+    }
+
     if (
       !profile ||
       profile.phone !== phone ||
