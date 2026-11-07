@@ -1783,6 +1783,18 @@ async function requireAuth(req, res, next) {
     console.log("User ID matches:", claims.sub === user.id);
     console.log("Session ID exists:", typeof tokenSessionId === "string");
     console.log("Session ID format valid:", uuidRegex.test(tokenSessionId));
+
+    console.log("Session ID length:", tokenSessionId.length);
+
+    console.log(
+      "Session ID is standard UUID:",
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tokenSessionId)
+    );
+    
+    console.log(
+      "Session ID is 32 hex characters:",
+      /^[0-9a-f]{32}$/i.test(tokenSessionId)
+    );
     if (
       claims.sub !== user.id ||
       typeof tokenSessionId !== "string" ||
