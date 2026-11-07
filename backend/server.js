@@ -1776,13 +1776,15 @@ async function requireAuth(req, res, next) {
 
     const claims = claimsData.claims;
     const tokenSessionId = claims.session_id;
-
-    const uuidRegex =
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    
+const uuidRegex =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
     console.log("User ID matches:", claims.sub === user.id);
     console.log("Session ID exists:", typeof tokenSessionId === "string");
-    console.log("Session ID format valid:", uuidRegex.test(tokenSessionId));
+const sessionIdValid = uuidRegex.test(tokenSessionId);
+
+console.log("Session ID format valid:", sessionIdValid);
 
     console.log("Session ID length:", tokenSessionId.length);
 
@@ -1798,7 +1800,7 @@ async function requireAuth(req, res, next) {
     if (
       claims.sub !== user.id ||
       typeof tokenSessionId !== "string" ||
-      !uuidRegex.test(tokenSessionId)
+      !sessionIdValid
     ) {
       return res.status(401).json({
         success: false,
