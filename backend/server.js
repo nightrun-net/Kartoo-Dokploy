@@ -1987,15 +1987,13 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
       });
     }
 
-    // ==========================================
-    // 3. RELEASE DATABASE DEVICE SESSION
-    // ==========================================
-
-    const { data: released, error: releaseError } =
-      await supabase.rpc("release_kartoo_device_session", {
+    const { data: logoutResult, error: releaseError } =
+      await supabase.rpc("release_and_record_kartoo_logout", {
         p_user_id: req.user.id,
         p_session_id: sessionId
       });
+    
+    const released = logoutResult?.released === true;
 
     if (releaseError) {
       console.error(
@@ -2058,7 +2056,12 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: "Logged out successfully. Device session released."
+      message: logoutResult?.is_locked
+        ? "Logged out successfully. Login is locked for 24 hours."
+        : "Logged out successfully.",
+      logoutCount: logoutResult?.logout_count ?? 0,
+      isLocked: logoutResult?.is_locked === true,
+      lockedUntil: logoutResult?.locked_until ?? null
     });
 
   } catch (error) {
