@@ -1720,100 +1720,147 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
 
 
 
+
 async function requireAuth(req, res, next) {
   try {
+    // ==========================================
+    // 1. CHECK AUTHORIZATION HEADER
+    // ==========================================
+
     const authorization = req.headers.authorization || "";
 
-    if (!authorization.startsWith("Bearer ")) {
+    const match = authorization.match(/^Bearer\s+(.+)$/i);
+
+    if (!match) {
       return res.status(401).json({
         success: false,
         message: "Authentication required"
       });
     }
 
-    const token = authorization.slice(7).trim();
+    const token = match[1].trim();
 
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid authentication token"
-      });
-    }
+    // ==========================================
+    // 2. VALIDATE SUPABASE USER
+    // ==========================================
 
-    const { data, error } =
+    const { data: userData, error: userError } =
       await supabase.auth.getUser(token);
 
-    if (error || !data?.user) {
+    if (userError || !userData?.user) {
       return res.status(401).json({
         success: false,
-        message: "Invalid or expired session"
+        message: "Invalid or expired authentication token"
       });
     }
 
-  const { data: profile, error: profileError } =
-    await supabase
-      .from("users")
-      .select(`
-        id,
-        is_banned,
-        login_locked_until,
-        active_session_id,
-        is_logged_in
-      `)
-      .eq("id", data.user.id)
-      .maybeSingle();
+    const user = userData.user;
 
-    if (profileError) {
-      throw profileError;
-    }
+    // ==========================================
+    // 3. VERIFY JWT CLAIMS
+    // ==========================================
 
-    if (
-      !profile ||
-      profile.is_banned ||
-      (
-        profile.login_locked_until &&
-        new Date(profile.login_locked_until) > new Date()
-      )
-    ) {
-      return res.status(403).json({
-        success: false,
-        message: "Account unavailable"
-      });
-    }
-   
     const { data: claimsData, error: claimsError } =
       await supabase.auth.getClaims(token);
-    
+
     if (claimsError || !claimsData?.claims) {
       return res.status(401).json({
         success: false,
         message: "Invalid authentication session"
       });
     }
-    
-    const tokenSessionId = claimsData.claims.session_id;
-    
+
+    const claims = claimsData.claims;
+    const tokenSessionId = claims.session_id;
+
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
     if (
-      claimsData.claims.sub !== data.user.id ||
-      !tokenSessionId ||
-      !profile.is_logged_in ||
-      !profile.active_session_id ||
-      tokenSessionId !== profile.active_session_id
+      claims.sub !== user.id ||
+      typeof tokenSessionId !== "string" ||
+      !uuidRegex.test(tokenSessionId)
     ) {
       return res.status(401).json({
         success: false,
-        message: "Your session has expired or another device has logged in.",
-        code: "SESSION_REPLACED"
+        message: "Invalid authentication session"
       });
     }
 
-    req.user = data.user;
+    // ==========================================
+    // 4. LOAD DATABASE PROFILE
+    // ==========================================
+
+    const { data: profile, error: profileError } =
+      await supabase
+        .from("users")
+        .select(`
+          id,
+          is_banned,
+          login_locked_until,
+          active_session_id,
+          is_logged_in
+        `)
+        .eq("id", user.id)
+        .maybeSingle();
+
+    if (profileError) {
+      throw profileError;
+    }
+
+    // ==========================================
+    // 5. CHECK ACCOUNT STATUS
+    // ==========================================
+
+    if (
+      !profile ||
+      profile.is_banned ||
+      (
+        profile.login_locked_until &&
+        new Date(profile.login_locked_until).getTime() > Date.now()
+      )
+    ) {
+      return res.status(403).json({
+        success: false,
+        code: "ACCOUNT_UNAVAILABLE",
+        message: "Account unavailable"
+      });
+    }
+
+    // ==========================================
+    // 6. CHECK ACTIVE DEVICE SESSION
+    // ==========================================
+
+    const databaseSessionId = profile.active_session_id;
+
+    if (
+      profile.is_logged_in !== true ||
+      typeof databaseSessionId !== "string" ||
+      tokenSessionId.toLowerCase() !== databaseSessionId.toLowerCase()
+    ) {
+      return res.status(401).json({
+        success: false,
+        code: "SESSION_REPLACED",
+        message:
+          "Your session has expired, been logged out, or been replaced."
+      });
+    }
+
+    // ==========================================
+    // 7. AUTHENTICATION SUCCESS
+    // ==========================================
+
+    req.user = user;
     req.profile = profile;
+    req.sessionId = tokenSessionId;
 
     return next();
 
   } catch (error) {
-    console.error("Authentication error:", error.message);
+    console.error(
+      "Authentication middleware error:",
+      error.message
+    );
 
     return res.status(503).json({
       success: false,
@@ -1821,8 +1868,6 @@ async function requireAuth(req, res, next) {
     });
   }
 }
-
-
 
 /* ============================================
    GET AUTHENTICATED USER PROFILE
