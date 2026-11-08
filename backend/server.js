@@ -14,6 +14,14 @@ const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 
+function translatedResponse(messageKey, message, extra = {}) {
+  return {
+    ...extra,
+    messageKey,
+    message,
+  };
+}
+
 app.set('trust proxy', 1);
 
 app.use(helmet());
@@ -73,11 +81,11 @@ const sendOtpLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  message: {
-    success: false,
-    message:
-      'Too many OTP requests. Please try again after 10 minutes.',
-  },
+    message: translatedResponse(
+    'otpRateLimited',
+    'Too many OTP requests. Please try again after 10 minutes.',
+    { success: false }
+    ),
 });
 
 const verifyOtpLimiter = rateLimit({
@@ -85,14 +93,12 @@ const verifyOtpLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  message: {
-    success: false,
-    message:
-      'Too many verification attempts. Please try again later.',
-  },
+    message: translatedResponse(
+    'verificationRateLimited',
+    'Too many verification attempts. Please try again later.',
+    { success: false }
+    ),
 });
-
-
 
 function normalizeIraqiPhone(value) {
   let digits = String(value || '').replace(/\D/g, '');
@@ -233,13 +239,15 @@ app.post(
         req.body.phone
       );
 
-      if (!normalizedPhone) {
-        return res.status(400).json({
-          success: false,
-          message:
+        if (!normalizedPhone) {
+        return res.status(400).json(
+            translatedResponse(
+            'invalidIraqiPhone',
             'Enter a valid Iraqi number: 07XXXXXXXXX',
-        });
-      }
+            { success: false }
+            )
+        );
+        }
 
       const {
         data: existingUser,
@@ -254,13 +262,15 @@ app.post(
         throw existingUserError;
       }
 
-      if (existingUser) {
-        return res.status(409).json({
-          success: false,
-          message:
+        if (existingUser) {
+        return res.status(409).json(
+            translatedResponse(
+            'phoneAlreadyRegistered',
             'This phone number is already registered.',
-        });
-      }
+            { success: false }
+            )
+        );
+        }
 
 
       const {
@@ -290,12 +300,18 @@ app.post(
         );
 
         if (secondsSinceLastRequest < 40) {
-          return res.status(429).json({
-            success: false,
-            message: `Wait ${
-              40 - secondsSinceLastRequest
-            } seconds before requesting another code.`,
-          });
+        const seconds = 40 - secondsSinceLastRequest;
+
+        return res.status(429).json(
+            translatedResponse(
+            'waitBeforeResend',
+            `Wait ${seconds} seconds before requesting another code.`,
+            {
+                success: false,
+                messageParams: { seconds },
+            }
+            )
+        );
         }
       }
 
@@ -380,16 +396,20 @@ app.post(
         }
       }
 
-      return res.status(200).json({
-        success: true,
-        message:
-          'The verification code was sent through WhatsApp.',
-        requestId: newOtpId,
-        expiresIn: 300,
-        resendAfter: 40,
-      });
-    } catch (error) {
-      console.error('Send OTP error:', error);
+        return res.status(200).json(
+        translatedResponse(
+            'otpSent',
+            'The verification code was sent through WhatsApp.',
+            {
+            success: true,
+            requestId: newOtpId,
+            expiresIn: 300,
+            resendAfter: 40,
+            }
+        )
+        );
+        } catch (error) {
+        console.error('Send OTP error:', error);
 
 
       if (newOtpId) {
@@ -399,16 +419,13 @@ app.post(
           .eq('id', newOtpId);
       }
 
-      return res.status(
-        Number.isInteger(error.statusCode)
-          ? error.statusCode
-          : 500
-      ).json({
-        success: false,
-        message:
-          error.message ||
-          'Could not send the WhatsApp verification code.',
-      });
+    return res.status(500).json(
+    translatedResponse(
+        'otpSendFailed',
+        'Could not send the WhatsApp verification code.',
+        { success: false }
+    )
+    );
     }
   }
 );
@@ -435,30 +452,37 @@ app.post(
         req.body.phone
       );
 
-      if (!normalizedPhone) {
-        return res.status(400).json({
-          success: false,
-          message: 'The phone number is invalid.',
-        });
-      }
+        if (!normalizedPhone) {
+        return res.status(400).json(
+            translatedResponse(
+            'invalidPhone',
+            'The phone number is invalid.',
+            { success: false }
+            )
+        );
+        }
 
       if (
         typeof requestId !== 'string' ||
         !/^[0-9a-f-]{36}$/i.test(requestId)
       ) {
-        return res.status(400).json({
-          success: false,
-          message:
+        return res.status(400).json(
+        translatedResponse(
+            'invalidOtpRequest',
             'The OTP request is invalid. Request a new code.',
-        });
+            { success: false }
+        )
+        );
       }
 
       if (!/^\d{6}$/.test(String(code || ''))) {
-        return res.status(400).json({
-          success: false,
-          message:
+        return res.status(400).json(
+        translatedResponse(
+            'invalidOtpFormat',
             'Enter the complete six-digit code.',
-        });
+            { success: false }
+        )
+        );
       }
 
       if (
@@ -468,19 +492,23 @@ app.post(
         !String(district || '').trim() ||
         !String(homeAddress || '').trim()
       ) {
-        return res.status(400).json({
-          success: false,
-          message:
+        return res.status(400).json(
+        translatedResponse(
+            'incompleteRegistration',
             'The registration information is incomplete.',
-        });
+            { success: false }
+        )
+        );
       }
 
       if (!isStrongPassword(password)) {
-        return res.status(400).json({
-          success: false,
-          message:
+        return res.status(400).json(
+        translatedResponse(
+            'weakPassword',
             'Password must contain at least 8 characters, one capital letter, one number and one symbol.',
-        });
+            { success: false }
+        )
+        );
       }
 
 
@@ -510,29 +538,43 @@ app.post(
         ? claimResult[0]
         : claimResult;
 
-      if (!claim?.ok) {
+        if (!claim?.ok) {
         const errorMessages = {
-          not_found:
-            'Request a new verification code.',
-          already_used:
-            'This verification code was already used.',
-          expired:
-            'The verification code expired. Request a new code.',
-          max_attempts:
-            'Too many incorrect attempts. Request a new code.',
-          invalid_code:
-            'The verification code is incorrect.',
+            not_found: {
+            key: 'requestNewOtp',
+            message: 'Request a new verification code.',
+            },
+            already_used: {
+            key: 'otpAlreadyUsed',
+            message: 'This verification code was already used.',
+            },
+            expired: {
+            key: 'otpExpired',
+            message: 'The verification code expired. Request a new code.',
+            },
+            max_attempts: {
+            key: 'otpMaxAttempts',
+            message: 'Too many incorrect attempts. Request a new code.',
+            },
+            invalid_code: {
+            key: 'otpIncorrect',
+            message: 'The verification code is incorrect.',
+            },
         };
 
-        return res.status(400).json({
-          success: false,
-          message:
-            errorMessages[claim?.reason] ||
-            'The verification code could not be verified.',
-        });
-      }
+        const selectedError = errorMessages[claim?.reason] || {
+            key: 'otpVerificationFailed',
+            message: 'The verification code could not be verified.',
+        };
 
-
+        return res.status(400).json(
+            translatedResponse(
+            selectedError.key,
+            selectedError.message,
+            { success: false }
+            )
+        );
+        }
 
       const {
         data: existingProfile,
@@ -548,13 +590,14 @@ app.post(
       }
 
       if (existingProfile) {
-        return res.status(409).json({
-          success: false,
-          message:
+        return res.status(409).json(
+        translatedResponse(
+            'phoneAlreadyRegistered',
             'This phone number is already registered.',
-        });
+            { success: false }
+        )
+        );
       }
-
 
       const {
         data: authData,
@@ -575,11 +618,13 @@ app.post(
             authError.message || ''
           )
         ) {
-          return res.status(409).json({
-            success: false,
-            message:
-              'This phone number is already registered.',
-          });
+            return res.status(409).json(
+            translatedResponse(
+                'phoneAlreadyRegistered',
+                'This phone number is already registered.',
+                { success: false }
+            )
+            );
         }
 
         throw authError;
@@ -613,12 +658,16 @@ app.post(
         throw profileError;
       }
 
-      return res.status(201).json({
-        success: true,
-        userId: createdAuthUserId,
-        message:
-          'Your phone was verified and your account was created successfully.',
-      });
+        return res.status(201).json(
+        translatedResponse(
+            'accountCreated',
+            'Your phone was verified and your account was created successfully.',
+            {
+            success: true,
+            userId: createdAuthUserId,
+            }
+        )
+        );
     } catch (error) {
       console.error(
         'Verify and register error:',
@@ -632,12 +681,13 @@ app.post(
         );
       }
 
-      return res.status(500).json({
-        success: false,
-        message:
-          error.message ||
-          'Could not verify the code or create the account.',
-      });
+    return res.status(500).json(
+    translatedResponse(
+        'registrationFailed',
+        'Could not verify the code or create the account.',
+        { success: false }
+    )
+    );
     }
   }
 );
