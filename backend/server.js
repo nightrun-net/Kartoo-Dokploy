@@ -239,15 +239,17 @@ app.post(
         req.body.phone
       );
 
-        if (!normalizedPhone) {
-        return res.status(400).json(
-            translatedResponse(
-            'invalidIraqiPhone',
-            'Enter a valid Iraqi number: 07XXXXXXXXX',
-            { success: false }
-            )
-        );
+    if (!normalizedPhone) {
+    return res.status(400).json(
+        translatedResponse(
+        'invalidPhone',
+        'Enter a valid Iraqi number: 07XXXXXXXXX',
+        {
+            success: false
         }
+        )
+    );
+    }
 
       const {
         data: existingUser,
@@ -300,7 +302,10 @@ app.post(
         );
 
         if (secondsSinceLastRequest < 40) {
-        const seconds = 40 - secondsSinceLastRequest;
+        const seconds = Math.max(
+            1,
+            40 - secondsSinceLastRequest
+        );
 
         return res.status(429).json(
             translatedResponse(
@@ -308,7 +313,9 @@ app.post(
             `Wait ${seconds} seconds before requesting another code.`,
             {
                 success: false,
-                messageParams: { seconds },
+                messageParams: {
+                seconds
+                }
             }
             )
         );
@@ -729,13 +736,17 @@ app.post(
         throw profileError;
       }
 
-      if (!profile) {
-        return res.status(404).json({
-          success: false,
-          message:
+        if (!profile) {
+        return res.status(404).json(
+            translatedResponse(
+            'phoneNotFound',
             'No account was found with this phone number.',
-        });
-      }
+            {
+                success: false
+            }
+            )
+        );
+        }
 
       const {
         data: latestOtp,
@@ -928,23 +939,18 @@ app.post(
           );
       }
 
-      return res
-        .status(200)
-        .json({
-          success: true,
-
-          message:
+     return res.status(200).json(
+        translatedResponse(
+            'otpSent',
             'The verification code was sent through WhatsApp.',
-
-          requestId:
-            newOtpId,
-
-          expiresIn:
-            300,
-
-          resendAfter:
-            40,
-        });
+            {
+            success: true,
+            requestId: newOtpId,
+            expiresIn: 300,
+            resendAfter: 40
+            }
+        )
+        );
     } catch (error) {
       console.error(
         'Forgot password send OTP error:',
@@ -965,21 +971,23 @@ app.post(
           );
       }
 
-      return res
+     return res
         .status(
-          Number.isInteger(
-            error.statusCode
-          )
+            Number.isInteger(error.statusCode) &&
+            error.statusCode >= 500 &&
+            error.statusCode <= 599
             ? error.statusCode
             : 500
         )
-        .json({
-          success: false,
-
-          message:
-            error.message ||
+        .json(
+            translatedResponse(
+            'sendFailed',
             'Could not send password reset OTP.',
-        });
+            {
+                success: false
+            }
+            )
+        );
     }
   }
 );
@@ -1000,28 +1008,32 @@ app.post(
           ''
         );
 
-      if (!normalizedPhone) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              'The phone number is invalid.',
-          });
-      }
+        if (!normalizedPhone) {
+        return res.status(400).json(
+            translatedResponse(
+            'invalidPhone',
+            'The phone number is invalid.',
+            {
+                success: false
+            }
+            )
+        );
+        }
 
       if (
         !/^\d{6}$/.test(
           otp
         )
       ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              'Enter the complete six-digit code.',
-          });
+        return res.status(400).json(
+        translatedResponse(
+            'invalidOtp',
+            'Enter a valid 6-digit verification code.',
+            {
+            success: false
+            }
+        )
+        );
       }
 
       const {
@@ -1056,17 +1068,17 @@ app.post(
         throw otpError;
       }
 
-      if (
-        !otpRow
-      ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              'Request a new verification code.',
-          });
-      }
+        if (!otpRow) {
+    return res.status(400).json(
+        translatedResponse(
+        'requestNewOtp',
+        'Request a new verification code.',
+        {
+            success: false
+        }
+        )
+    );
+    }
 
       if (
         new Date(
@@ -1088,13 +1100,15 @@ app.post(
             otpRow.id
           );
 
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              'The verification code expired.',
-          });
+        return res.status(400).json(
+        translatedResponse(
+            'otpExpired',
+            'The verification code has expired.',
+            {
+            success: false
+            }
+        )
+        );
       }
 
       const attempts =
@@ -1172,16 +1186,21 @@ app.post(
             otpRow.id
           );
 
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              newAttempts >=
-              maxAttempts
-                ? 'Too many incorrect attempts. Request a new code.'
-                : 'The verification code is incorrect.',
-          });
+        return res.status(400).json(
+        translatedResponse(
+            newAttempts >= maxAttempts
+            ? 'otpMaxAttempts'
+            : 'otpIncorrect',
+
+            newAttempts >= maxAttempts
+            ? 'Too many incorrect attempts. Request a new code.'
+            : 'The verification code is incorrect.',
+
+            {
+            success: false
+            }
+        )
+        );
       }
 
       const resetToken =
@@ -1251,15 +1270,15 @@ app.post(
         error
       );
 
-      return res
-        .status(500)
-        .json({
-          success: false,
-
-          message:
-            error.message ||
-            'Could not verify the password reset OTP.',
-        });
+    return res.status(500).json(
+    translatedResponse(
+        'verifyFailed',
+        'Could not verify the password reset OTP.',
+        {
+        success: false
+        }
+    )
+    );
     }
   }
 );
@@ -1286,41 +1305,41 @@ app.post(
           ''
         );
 
-      if (!normalizedPhone) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              'The phone number is invalid.',
-          });
-      }
+        if (!normalizedPhone) {
+        return res.status(400).json(
+            translatedResponse(
+            'invalidPhone',
+            'The phone number is invalid.',
+            {
+                success: false
+            }
+            )
+        );
+        }
 
-      if (
-        !resetToken
-      ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              'The password reset session is invalid.',
-          });
-      }
+        if (!resetToken) {
+        return res.status(400).json(
+            translatedResponse(
+            'invalidResetSession',
+            'The password reset session is invalid.',
+            {
+                success: false
+            }
+            )
+        );
+        }
 
-      if (
-        !isStrongPassword(
-          newPassword
-        )
-      ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              'Password must contain at least 8 characters, one capital letter, one number and one symbol.',
-          });
-      }
+     if (!isStrongPassword(newPassword)) {
+        return res.status(400).json(
+            translatedResponse(
+            'passwordRules',
+            'Password must contain at least 8 characters, one capital letter, one number and one symbol.',
+            {
+                success: false
+            }
+            )
+        );
+        }
 
       const resetTokenHash =
         crypto
@@ -1372,35 +1391,36 @@ app.post(
       }
 
       if (
-        !otpRow ||
-        !otpRow.verified_at
-      ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              'The password reset session is invalid.',
-          });
-      }
+    !otpRow ||
+    !otpRow.verified_at
+    ) {
+    return res.status(400).json(
+        translatedResponse(
+        'invalidResetSession',
+        'The password reset session is invalid.',
+        {
+            success: false
+        }
+        )
+    );
+    }
 
-      if (
-        !otpRow
-          .reset_token_expires_at ||
+     if (
+        !otpRow.reset_token_expires_at ||
         new Date(
-          otpRow
-            .reset_token_expires_at
-        ).getTime() <=
-        Date.now()
-      ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              'The password reset session expired. Request a new code.',
-          });
-      }
+            otpRow.reset_token_expires_at
+        ).getTime() <= Date.now()
+        ) {
+        return res.status(400).json(
+            translatedResponse(
+            'expiredResetSession',
+            'The password reset session expired. Request a new code.',
+            {
+                success: false
+            }
+            )
+        );
+        }
 
       const {
         error:
@@ -1449,27 +1469,30 @@ app.post(
         );
       }
 
-      return res.json({
-        success: true,
-
-        message:
-          'Password changed successfully.',
-      });
+    return res.status(200).json(
+    translatedResponse(
+        'successMessage',
+        'Password changed successfully.',
+        {
+        success: true
+        }
+    )
+    );
     } catch (error) {
       console.error(
         'Forgot password reset error:',
         error
       );
 
-      return res
-        .status(500)
-        .json({
-          success: false,
-
-          message:
-            error.message ||
+     return res.status(500).json(
+        translatedResponse(
+            'resetFailed',
             'Could not reset the password.',
-        });
+            {
+            success: false
+            }
+        )
+        );
     }
   }
 );
@@ -1592,11 +1615,18 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
     if (lockError) throw lockError;
 
     if (lock?.locked) {
-      return res.status(429).json({
-        success: false,
-        message: "Login temporarily locked",
-        lockedUntil: lock.locked_until
-      });
+    return res.status(429).json(
+        translatedResponse(
+        "passwordLocked",
+        "Login temporarily locked",
+        {
+            success: false,
+            code: "PASSWORD_LOCKED",
+            lockType: "password",
+            lockedUntil: lock.locked_until
+        }
+        )
+    );
     }
 
     // ==========================================
@@ -1633,6 +1663,7 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
         return res.status(403).json({
           success: false,
           code: "LOGOUT_LIMIT_LOCKED",
+          messageKey: "logoutLocked",
           message: "Login is locked for 24 hours after two logouts.",
           lockedUntil: logoutLimit.locked_until,
           lockType: "logout_limit"
@@ -1654,12 +1685,32 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
 
       if (failedError) throw failedError;
 
-      return res.status(401).json({
-        success: false,
-        message: "Invalid login credentials",
-        attemptsLeft: failed?.attempts_left,
-        lockedUntil: failed?.locked_until
-      });
+        const isLocked = Boolean(
+        failed?.locked_until &&
+        new Date(failed.locked_until).getTime() > Date.now()
+        );
+
+        return res.status(401).json(
+        translatedResponse(
+            isLocked ? "passwordLocked" : "wrongPassword",
+            "Invalid login credentials",
+            {
+            success: false,
+            code: isLocked
+                ? "PASSWORD_LOCKED"
+                : "INVALID_CREDENTIALS",
+            lockType: isLocked ? "password" : null,
+            attemptsLeft: failed?.attempts_left ?? null,
+            lockedUntil: failed?.locked_until ?? null,
+            messageParams: {
+                attempts: Math.max(
+                0,
+                Number(failed?.attempts_left ?? 0)
+                )
+            }
+            }
+        )
+        );
     }
       
 
@@ -1721,6 +1772,7 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
       return res.status(403).json({
         success: false,
         code: "LOGOUT_LIMIT_LOCKED",
+        messageKey: "logoutLocked",
         message: "Your account is locked for 24 hours after two logouts.",
         lockedUntil: logoutLimit.locked_until,
         lockType: "logout_limit"
