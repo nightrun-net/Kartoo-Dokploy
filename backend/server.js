@@ -1283,220 +1283,156 @@ app.post(
   }
 );
 
+
 app.post(
   '/auth/forgot-password/reset-password',
   verifyOtpLimiter,
   async (req, res) => {
     try {
-      const normalizedPhone =
-        normalizeIraqiPhone(
-          req.body.phone
-        );
+      const normalizedPhone = normalizeIraqiPhone(
+        req.body?.phone
+      );
 
-      const resetToken =
-        String(
-          req.body.resetToken ||
-          ''
-        );
+      const resetToken = String(
+        req.body?.resetToken || ''
+      );
 
-      const newPassword =
-        String(
-          req.body.newPassword ||
-          ''
-        );
+      const newPassword = String(
+        req.body?.newPassword || ''
+      );
 
-        if (!normalizedPhone) {
+      // 1. Validate phone number
+      if (!normalizedPhone) {
         return res.status(400).json(
-            translatedResponse(
+          translatedResponse(
             'invalidPhone',
             'The phone number is invalid.',
-            {
-                success: false
-            }
-            )
+            { success: false }
+          )
         );
-        }
+      }
 
-        if (!resetToken) {
+      // 2. Validate reset token format
+      if (!/^[a-f0-9]{64}$/i.test(resetToken)) {
         return res.status(400).json(
-            translatedResponse(
+          translatedResponse(
             'invalidResetSession',
             'The password reset session is invalid.',
-            {
-                success: false
-            }
-            )
+            { success: false }
+          )
         );
-        }
+      }
 
-     if (!isStrongPassword(newPassword)) {
+      // 3. Validate new password
+      if (!isStrongPassword(newPassword)) {
         return res.status(400).json(
-            translatedResponse(
+          translatedResponse(
             'passwordRules',
             'Password must contain at least 8 characters, one capital letter, one number and one symbol.',
-            {
-                success: false
-            }
-            )
+            { success: false }
+          )
         );
-        }
-
-      const resetTokenHash =
-        crypto
-          .createHmac(
-            'sha256',
-            OTP_HASH_SECRET
-          )
-          .update(
-            resetToken
-          )
-          .digest('hex');
-
-      const {
-        data: otpRow,
-        error: otpError,
-      } =
-        await supabase
-          .from(
-            'password_reset_otps'
-          )
-          .select(
-            'id, user_id, reset_token_hash, reset_token_expires_at, used_at, verified_at'
-          )
-          .eq(
-            'phone',
-            normalizedPhone.e164
-          )
-          .eq(
-            'reset_token_hash',
-            resetTokenHash
-          )
-          .is(
-            'used_at',
-            null
-          )
-          .order(
-            'created_at',
-            {
-              ascending: false,
-            }
-          )
-          .limit(1)
-          .maybeSingle();
-
-      if (
-        otpError
-      ) {
-        throw otpError;
       }
 
-      if (
-    !otpRow ||
-    !otpRow.verified_at
-    ) {
-    return res.status(400).json(
-        translatedResponse(
-        'invalidResetSession',
-        'The password reset session is invalid.',
+      // 4. Hash reset token using existing secret
+      const resetTokenHash = crypto
+        .createHmac('sha256', OTP_HASH_SECRET)
+        .update(resetToken)
+        .digest('hex');
+
+      // 5. Atomically consume the reset token
+      const {
+        data: claimResult,
+        error: claimError
+      } = await supabase.rpc(
+        'claim_password_reset_token',
         {
-            success: false
+          p_phone: normalizedPhone.e164,
+          p_reset_token_hash: resetTokenHash
         }
-        )
-    );
-    }
+      );
 
-     if (
-        !otpRow.reset_token_expires_at ||
-        new Date(
-            otpRow.reset_token_expires_at
-        ).getTime() <= Date.now()
-        ) {
-        return res.status(400).json(
-            translatedResponse(
-            'expiredResetSession',
-            'The password reset session expired. Request a new code.',
-            {
-                success: false
-            }
-            )
-        );
-        }
-
-      const {
-        error:
-          passwordUpdateError,
-      } =
-        await supabase.auth
-          .admin
-          .updateUserById(
-            otpRow.user_id,
-            {
-              password:
-                newPassword,
-            }
-          );
-
-      if (
-        passwordUpdateError
-      ) {
-        throw passwordUpdateError;
-      }
-
-      const {
-        error:
-          markUsedError,
-      } =
-        await supabase
-          .from(
-            'password_reset_otps'
-          )
-          .update({
-            used_at:
-              new Date()
-                .toISOString(),
-          })
-          .eq(
-            'id',
-            otpRow.id
-          );
-
-      if (
-        markUsedError
-      ) {
+      if (claimError) {
         console.error(
-          'Could not mark reset OTP as used:',
-          markUsedError
+          'Password reset token claim failed:',
+          claimError.message
+        );
+
+        throw claimError;
+      }
+
+      const claim = Array.isArray(claimResult)
+        ? claimResult[0]
+        : claimResult;
+
+      if (
+        claim?.ok !== true ||
+        typeof claim.user_id !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          claim.user_id
+        )
+      ) {
+        return res.status(400).json(
+          translatedResponse(
+            'invalidResetSession',
+            'The password reset session is invalid or expired. Request a new code.',
+            { success: false }
+          )
         );
       }
 
-    return res.status(200).json(
-    translatedResponse(
-        'successMessage',
-        'Password changed successfully.',
+      // 6. Change password for the claimed user
+      const {
+        error: passwordUpdateError
+      } = await supabase.auth.admin.updateUserById(
+        claim.user_id,
         {
-        success: true
+          password: newPassword
         }
-    )
-    );
+      );
+
+      if (passwordUpdateError) {
+        console.error(
+          'Supabase password update failed:',
+          passwordUpdateError.message
+        );
+
+        // Token remains consumed for security.
+        // User must request a new OTP.
+        return res.status(503).json(
+          translatedResponse(
+            'resetFailed',
+            'Could not reset the password. Please request a new verification code.',
+            { success: false }
+          )
+        );
+      }
+
+      // 7. Success
+      return res.status(200).json(
+        translatedResponse(
+          'successMessage',
+          'Password changed successfully.',
+          { success: true }
+        )
+      );
+
     } catch (error) {
       console.error(
         'Forgot password reset error:',
-        error
+        error.message
       );
 
-     return res.status(500).json(
+      return res.status(500).json(
         translatedResponse(
-            'resetFailed',
-            'Could not reset the password.',
-            {
-            success: false
-            }
+          'resetFailed',
+          'Could not reset the password.',
+          { success: false }
         )
-        );
+      );
     }
   }
 );
-
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
