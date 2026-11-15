@@ -1,0 +1,28 @@
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Git and development files
+.git/
+.gitignore
+.github/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Test and temporary files
+coverage/
+*.log
+tmp/
+temp/
